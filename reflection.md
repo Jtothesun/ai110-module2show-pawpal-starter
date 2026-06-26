@@ -5,6 +5,21 @@
 **a. Initial design**
 
 - Briefly describe your initial UML design.
+
+#User needs to add a pet
+    Each user can have multiple pets (one to many)
+
+#User can set options on level of care:
+    - maybe they only need help with walks or feeding, OR even all of the above (walk, feeding, meds, enrichment, grooming, etc.)
+    -schedule any of these or all
+    
+#Plan generated for fulfilling all tasks ( a schedule of sorts) can be based on input of user's constrants
+    -What time does the user have to work?
+    -What time are their hobbies/free time?
+    -Do pets get along with each other? (if multiple)
+    -
+
+
 - What classes did you include, and what responsibilities did you assign to each?
 
 **b. Design changes**
