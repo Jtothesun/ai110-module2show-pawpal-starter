@@ -1,0 +1,50 @@
+classDiagram
+    class Owner {
+        +int id
+        +str first_name
+        +str last_name
+        +list~Pet~ pets
+        +add_pet(pet) None
+        +schedule_task(task) None
+    }
+
+    class Pet {
+        +str name
+        +str species
+        +str breed
+        +Owner owner
+        +list~Task~ tasks
+        +eat() None
+        +walk() None
+        +take_meds() None
+        +train() None
+        +groom() None
+    }
+
+    class Task {
+        +int id
+        +str title
+        +TaskType type
+        +datetime due_date
+        +int priority
+        +bool completed
+        +Pet pet
+        +mark_complete() None
+        +reschedule(new_date) None
+        +is_overdue() bool
+    }
+
+    class TaskType {
+        <<enumeration>>
+        FEEDING
+        WALK
+        MEDICATION
+        APPOINTMENT
+        GROOMING
+        TRAINING
+    }
+
+    Owner "1" --> "0..*" Pet : owns
+    Owner "1" --> "0..*" Task : schedules
+    Pet "1" --> "0..*" Task : has
+    Task "*" --> "1" TaskType : categorized by
