@@ -88,12 +88,7 @@ class Task:
         self.completed = True
 
     def reset(self) -> None:
-        """Re-open the task for its next cycle.
-
-        Recurring tasks (daily/weekly) should be reset at the start of each new
-        period so they show up as pending again. A one-off task normally stays
-        completed, so this is a no-op for :attr:`Frequency.ONCE`.
-        """
+        """Re-open a recurring task for its next cycle (no-op for one-offs)."""
         if self.frequency is not Frequency.ONCE:
             self.completed = False
 
@@ -102,6 +97,7 @@ class Task:
         return not self.completed
 
     def __str__(self) -> str:
+        """Return a compact one-line summary of the task."""
         status = "✓" if self.completed else "○"
         return (
             f"{status} {self.scheduled_time.strftime('%H:%M')} "
@@ -132,12 +128,7 @@ class Pet:
     id: int = field(default_factory=lambda: next(_pet_ids))
 
     def add_task(self, task: Task) -> Task:
-        """Attach a care task to this pet.
-
-        Keeps both sides of the relationship consistent by setting
-        ``task.pet`` to ``self``. Returns the task so callers can chain or keep
-        a reference.
-        """
+        """Attach a task to this pet, linking it back via ``task.pet``."""
         task.pet = self
         self.tasks.append(task)
         return task
@@ -157,6 +148,7 @@ class Pet:
         return [t for t in self.tasks if t.completed]
 
     def __str__(self) -> str:
+        """Return a readable label like ``Name (species, breed)``."""
         return f"{self.name} ({self.species}, {self.breed})"
 
 
@@ -182,14 +174,11 @@ class Owner:
 
     @property
     def full_name(self) -> str:
+        """Return the owner's first and last name combined."""
         return f"{self.first_name} {self.last_name}"
 
     def add_pet(self, pet: Pet) -> Pet:
-        """Register a pet under this owner.
-
-        Sets ``pet.owner`` to ``self`` so the relationship is consistent in
-        both directions, and guards against adding the same pet twice.
-        """
+        """Register a pet under this owner, linking it back via ``pet.owner``."""
         if pet not in self.pets:
             pet.owner = self
             self.pets.append(pet)
@@ -207,6 +196,7 @@ class Owner:
         return [task for pet in self.pets for task in pet.tasks]
 
     def __str__(self) -> str:
+        """Return a summary naming the owner and pet count."""
         return f"{self.full_name} (owns {len(self.pets)} pet(s))"
 
 
@@ -224,6 +214,7 @@ class Scheduler:
     """
 
     def __init__(self, owner: Owner) -> None:
+        """Create a scheduler that reads tasks live from ``owner``."""
         self.owner = owner
 
     # --- retrieval ---------------------------------------------------------
@@ -244,19 +235,11 @@ class Scheduler:
 
     @staticmethod
     def _sort_key(task: Task) -> tuple[int, time]:
-        """Sort key: higher priority first, then earlier time first.
-
-        Priority is negated because Python sorts ascending, and we want the
-        HIGH (largest) priority at the front of the list.
-        """
+        """Sort key ordering by highest priority first, then earliest time."""
         return (-int(task.priority), task.scheduled_time)
 
     def build_daily_plan(self) -> list[Task]:
-        """Return today's pending tasks ordered by priority, then time.
-
-        This is the primary method the UI's "Generate schedule" button should
-        call. It answers: *what should this owner do next, and in what order?*
-        """
+        """Return pending tasks ordered by priority, then time of day."""
         return sorted(self.pending_tasks(), key=self._sort_key)
 
     def next_task(self) -> Task | None:
@@ -269,22 +252,14 @@ class Scheduler:
         task.mark_complete()
 
     def reset_daily_tasks(self) -> None:
-        """Re-open recurring tasks for a fresh day.
-
-        Call this at the start of a new day so daily/weekly tasks reappear in
-        the plan while one-off tasks stay done.
-        """
+        """Re-open every recurring task for a fresh day."""
         for task in self.all_tasks():
             task.reset()
 
     # --- explanation -------------------------------------------------------
 
     def explain_plan(self) -> str:
-        """Return a human-readable, ordered plan with the pet for each task.
-
-        Explaining *why* each task is placed where it is makes the scheduler's
-        decisions transparent - useful both for the UI and for debugging.
-        """
+        """Return a readable, ordered plan naming the pet for each task."""
         plan = self.build_daily_plan()
         if not plan:
             return "All tasks are complete. 🎉"
