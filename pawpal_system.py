@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import itertools
 from dataclasses import dataclass, field
-from datetime import time
+from datetime import date, time, timedelta
 from enum import Enum, IntEnum
 
 # Module-level counters used to hand out unique, stable ids so callers never
@@ -60,6 +60,18 @@ class Frequency(Enum):
     MONTHLY = "monthly"
 
 
+# How far ahead the *next* occurrence of a recurring task lands. ``timedelta``
+# represents an exact span of days, so DAILY and WEEKLY are precise. ONCE has no
+# next occurrence (absent from the map). MONTHLY is intentionally omitted: a
+# calendar month isn't a fixed number of days, so it can't be expressed as a
+# reliable timedelta - it needs calendar-aware logic (e.g. dateutil.relativedelta)
+# and is out of scope here.
+_RECURRENCE_DELTAS: dict[Frequency, timedelta] = {
+    Frequency.DAILY: timedelta(days=1),
+    Frequency.WEEKLY: timedelta(weeks=1),
+}
+
+
 @dataclass
 class Task:
     """A single pet care activity, e.g. "Morning walk at 08:00, daily".
@@ -70,6 +82,9 @@ class Task:
         frequency: How often the task recurs (see :class:`Frequency`).
         priority: How urgent the task is (see :class:`Priority`).
         completed: Whether the task has been carried out for the current cycle.
+        due_date: The calendar day this occurrence is due. Combined with
+            ``scheduled_time`` it pins down exactly when the task should happen.
+            Defaults to today; recurring occurrences advance it via ``timedelta``.
         pet: Back-reference to the owning :class:`Pet`. Set automatically by
             :meth:`Pet.add_task`; leave it as ``None`` when constructing.
         id: Auto-assigned unique identifier.
@@ -80,21 +95,82 @@ class Task:
     frequency: Frequency = Frequency.DAILY
     priority: Priority = Priority.MEDIUM
     completed: bool = False
-    pet: "Pet | None" = None
+    due_date: date = field(default_factory=date.today)
+    # Back-reference to the owning Pet. Excluded from __eq__/__repr__ to avoid
+    # infinite recursion: Task -> pet -> tasks -> Task -> ... (dataclasses
+    # compare every field by default, and the relationship is bidirectional).
+    pet: "Pet | None" = field(default=None, compare=False, repr=False)
     id: int = field(default_factory=lambda: next(_task_ids))
 
-    def mark_complete(self) -> None:
-        """Mark this task as done for the current cycle."""
+    def mark_complete(self) -> "Task | None":
+        """Mark this task done and, if it recurs, spawn its next occurrence.
+
+        For a DAILY or WEEKLY task, completing it automatically creates a fresh
+        Task for the next cycle (tomorrow / next week) and attaches it to the
+        same pet, so the owner's to-do list refills itself. ONCE (and the
+        unsupported MONTHLY) tasks simply close.
+
+        Guarded against double-completion: calling this on an already-completed
+        task is a no-op and does NOT spawn a duplicate. Returns the newly
+        created follow-up Task, or ``None`` when nothing was spawned.
+        """
+        if self.completed:
+            return None
         self.completed = True
 
+        following = self.next_occurrence()
+        if following is not None and self.pet is not None:
+            self.pet.add_task(following)
+        return following
+
+    def next_occurrence(self) -> "Task | None":
+        """Return a fresh Task for this task's next cycle, or ``None``.
+
+        Daily -> today + 1 day, weekly -> today + 7 days, computed with
+        :class:`datetime.timedelta` for accurate date arithmetic (it rolls over
+        month/year boundaries correctly). One-off and monthly tasks return
+        ``None``. The returned Task is pending, carries the same description,
+        time, frequency, and priority, and is NOT yet attached to a pet - that
+        is the caller's job (see :meth:`mark_complete`).
+        """
+        delta = _RECURRENCE_DELTAS.get(self.frequency)
+        if delta is None:
+            return None
+        return Task(
+            description=self.description,
+            scheduled_time=self.scheduled_time,
+            frequency=self.frequency,
+            priority=self.priority,
+            due_date=date.today() + delta,
+        )
+
     def reset(self) -> None:
-        """Re-open a recurring task for its next cycle (no-op for one-offs)."""
+        """Re-open a recurring task for its next cycle (no-op for one-offs).
+
+        An in-place alternative to :meth:`mark_complete`'s spawn-a-new-instance
+        behavior: instead of creating a follow-up Task, this just flips the same
+        task back to pending. Used by :meth:`Scheduler.reset_daily_tasks` for a
+        bulk "start a fresh day" reset. Prefer ``mark_complete`` for normal
+        completion; use ``reset`` when you want to keep task identity/ids stable.
+        """
         if self.frequency is not Frequency.ONCE:
             self.completed = False
 
     def is_pending(self) -> bool:
         """Return ``True`` if the task still needs to be done."""
         return not self.completed
+
+    def __repr__(self) -> str:
+        """Return a concise, unambiguous developer representation.
+
+        Deliberately omits ``pet`` (the back-reference) so printing a Task -
+        or a list of them - can't recurse through pet -> tasks -> task.
+        """
+        return (
+            f"Task(id={self.id}, description={self.description!r}, "
+            f"due={self.due_date.isoformat()} {self.scheduled_time.strftime('%H:%M')}, "
+            f"priority={self.priority.name}, completed={self.completed})"
+        )
 
     def __str__(self) -> str:
         """Return a compact one-line summary of the task."""
@@ -123,7 +199,9 @@ class Pet:
     name: str
     species: str
     breed: str = "unknown"
-    owner: "Owner | None" = None
+    # Back-reference to the Owner. Excluded from __eq__/__repr__ for the same
+    # reason as Task.pet above (breaks the Pet <-> Owner comparison cycle).
+    owner: "Owner | None" = field(default=None, compare=False, repr=False)
     tasks: list[Task] = field(default_factory=list)
     id: int = field(default_factory=lambda: next(_pet_ids))
 
@@ -146,6 +224,17 @@ class Pet:
     def completed_tasks(self) -> list[Task]:
         """Return this pet's completed tasks."""
         return [t for t in self.tasks if t.completed]
+
+    def __repr__(self) -> str:
+        """Return a concise developer representation.
+
+        Summarizes ``tasks`` as a count (not the full list) and omits the
+        ``owner`` back-reference, keeping the output short and recursion-free.
+        """
+        return (
+            f"Pet(id={self.id}, name={self.name!r}, species={self.species!r}, "
+            f"breed={self.breed!r}, tasks={len(self.tasks)})"
+        )
 
     def __str__(self) -> str:
         """Return a readable label like ``Name (species, breed)``."""
@@ -195,6 +284,13 @@ class Owner:
         """Return every task across all of this owner's pets, flattened."""
         return [task for pet in self.pets for task in pet.tasks]
 
+    def __repr__(self) -> str:
+        """Return a concise developer representation (pets shown as a count)."""
+        return (
+            f"Owner(id={self.id}, name={self.full_name!r}, "
+            f"pets={len(self.pets)})"
+        )
+
     def __str__(self) -> str:
         """Return a summary naming the owner and pet count."""
         return f"{self.full_name} (owns {len(self.pets)} pet(s))"
@@ -241,6 +337,47 @@ class Scheduler:
     def build_daily_plan(self) -> list[Task]:
         """Return pending tasks ordered by priority, then time of day."""
         return sorted(self.pending_tasks(), key=self._sort_key)
+
+    def sort_by_time(self) -> list[Task]:
+        """Return all tasks ordered chronologically by time of day.
+
+        Uses ``sorted()`` with a lambda key that renders each task's time as an
+        ``"HH:MM"`` string. Because the format is zero-padded 24-hour, plain
+        string comparison ("08:00" < "14:00") matches chronological order, so
+        no time arithmetic is needed. ``sorted()`` returns a NEW list and leaves
+        the underlying task lists untouched.
+        """
+        return sorted(
+            self.all_tasks(),
+            key=lambda task: task.scheduled_time.strftime("%H:%M"),
+        )
+
+    def filter_tasks(
+        self,
+        *,
+        completed: bool | None = None,
+        pet_name: str | None = None,
+    ) -> list[Task]:
+        """Return tasks narrowed by completion status and/or pet name.
+
+        Both filters are keyword-only and optional; leave one as ``None`` to
+        skip it. When both are supplied a task must satisfy BOTH conditions
+        (logical AND). Pet-name matching is case-insensitive.
+
+        Examples:
+            scheduler.filter_tasks(completed=False)          # everything pending
+            scheduler.filter_tasks(pet_name="Pandora")       # one pet's tasks
+            scheduler.filter_tasks(completed=True, pet_name="Jimmy")
+        """
+        tasks = self.all_tasks()
+        if completed is not None:
+            tasks = [t for t in tasks if t.completed == completed]
+        if pet_name is not None:
+            tasks = [
+                t for t in tasks
+                if t.pet is not None and t.pet.name.lower() == pet_name.lower()
+            ]
+        return tasks
 
     def next_task(self) -> Task | None:
         """The single most important pending task, or ``None`` if all done."""
